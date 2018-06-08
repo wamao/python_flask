@@ -4,9 +4,15 @@ from flask import Flask
 from flask import jsonify
 from flask_cors import *
 from flask import request
-from models import User,db,Address,Cart
+from models import User,db,Address,Cart,Coupon,UserCoupon,Collect,Goods
+from passlib.apps import custom_app_context
 import uuid
+import time
 import config  # 配置文件
+from config import  UPLOAD_FOLDER,ALLOWED_EXTENSIONS 
+from werkzeug import secure_filename
+from sqlalchemy import and_
+import os
 import sys
 defaultencoding = 'utf-8'
 if sys.getdefaultencoding() != defaultencoding:
@@ -36,9 +42,11 @@ def login():
     if request.method == 'POST':
         username=request.form.get('username')
         password=request.form.get('password')
-        user = User.query.filter(User.username == username,User.password == password).first()
-        if user:
+        user = User.query.filter(User.username == username).first()
+        if user and user.verify_password(password):
            responseData["status"]=0 
+           Token=user.generate_auth_token() # 获取token
+           responseData["result"]["Token"]=Token
            responseData["message"]="登录成功"
         else:
             responseData["status"]=1 
@@ -72,7 +80,10 @@ def register():
                     responseData["status"]=2 
                     responseData["message"]="两次密码输入不一致,请重新输入!"
                 else:
-                    user = User(username=username,password=password)
+                    creatTime=time.strftime("%Y-%m-%d %H:%M:%S")
+                    userId=str(uuid.uuid1())
+                    user = User(username=username,password=password,creatTime=creatTime,userId=userId)
+                    user.hash_password(password)
                     db.session.add(user)
                     db.session.commit() 
                     responseData["status"]=0 
@@ -96,7 +107,7 @@ def addaddress():
         ContactDetailAddress=request.form.get("ContactDetailAddress")
         isDefault=request.form.get("isDefault")
         AddressId=str(uuid.uuid1())
-        if not(ContactPerson and ContactNumber and ContactAddress and ContactDetailAddress ) :
+        if not all([ContactPerson, ContactNumber , ContactAddress ,ContactDetailAddress] ) :
             responseData["status"]=1 
             responseData["message"]="缺少必要的业务参数!"
         else:
@@ -149,7 +160,7 @@ def editAddress():
     isDefault=request.form.get("isDefault")
     AddressId=request.form.get("AddressId")
    
-    if not(ContactPerson and ContactNumber and ContactAddress and ContactDetailAddress and AddressId ) :
+    if not all([ContactPerson , ContactNumber, ContactAddress, ContactDetailAddress ,AddressId] ) :
             responseData["status"]=1 
             responseData["message"]="缺少必要的业务参数!"
     else:
@@ -269,11 +280,15 @@ def delCart():
         responseData["status"]=1 
         responseData["message"]="缺少必要的业务参数!"
     else:
-        goods = Cart.query.filter(Cart.userId == userId,Cart.goodsId == goodsId,).first()
-        db.session.delete(goods)
-        db.session.commit()
-        responseData["status"]=0 
-        responseData["message"]="删除商品成功!"
+        goods = Cart.query.filter(and_(Cart.userId == userId,Cart.userId == userId)).first()
+        if not goods:
+            responseData["status"]=1 
+            responseData["message"]="删除失败,请稍后重试!" 
+        else:    
+            db.session.delete(goods)
+            db.session.commit()
+            responseData["status"]=0 
+            responseData["message"]="删除商品成功!"
 
     # 返回数据                
     return jsonify(responseData)
@@ -314,10 +329,11 @@ def category():
     }
 
     return jsonify(responseData)
-    
+
+
 #查询商品详情
 @app.route('/goodsDetail',methods=["POST"])
-def category():
+def goodsDetail():
     #返回参数结构
     responseData={
        "status":0,
@@ -338,6 +354,223 @@ def category():
     return jsonify(context)
 
     return jsonify(responseData)
+
+#检查扩展名是否合法
+def allowed_file(filename):
+    isCheck='.' in filename and   filename.rsplit('.', 1)[1] in ALLOWED_EXTENSIONS
+    return isCheck
+     
+
+#上传用户头像
+@app.route('/uploadFile',methods=["POST"])
+def uploadFile():
+    #返回参数结构
+    responseData={
+       "status":0,
+       "message":'',
+       "result":{}
+    }
+    if request.method == 'POST':
+        file = request.files['file']
+        if file and allowed_file(file.filename):
+            filename = secure_filename(file.filename)
+            file.save(os.path.join(UPLOAD_FOLDER, filename))
+            responseData["status"]=0 
+            responseData["message"]="文件上传成功!"
+        else:
+            responseData["status"]=1 
+            responseData["message"]="文件上传格式不正确!"
+    return jsonify(responseData) 
+
+
+#添加系统优惠券
+@app.route('/addCoupon',methods=["POST"])
+def addCoupon():
+    #返回参数结构
+    responseData={
+        "status":0,
+        "message":'',
+        "result":{}
+    }
+
+    if request.method=="POST" :
+        couponId =str(uuid.uuid1())
+        spendMoney =request.form.get("spendMoney")
+        disCount = request.form.get("disCount")
+        endTime =request.form.get("endTime")
+        title =request.form.get("title")
+        if not all([spendMoney,disCount,endTime,title]):
+            responseData["status"]=1 
+            responseData["message"]="缺少必要的业务参数!"
+        else:
+            coupon= Coupon(couponId=couponId,spendMoney=spendMoney,disCount=disCount,endTime=endTime,title=title)
+            db.session.add(coupon)
+            db.session.commit()
+            responseData["status"]=0 
+            responseData["message"]="添加成功!"
+
+    return jsonify(responseData)
+
+
+
+#查询系统所有的优惠券
+@app.route('/systemCoupon',methods=["POST"])
+def systemCoupon():
+    #返回参数结构
+    responseData={
+        "status":0,
+        "message":'',
+        "result":{}
+    }
+    couponList = Coupon.query.filter().all()
+    responseData["message"]="获取系统优惠券成功!"
+    return jsonify(responseData)
+
+
+#用户领取优惠券
+@app.route('/drawCoupon',methods=["POST"])
+def drawCoupon():
+    #返回参数结构
+    responseData={
+        "status":0,
+        "message":'',
+        "result":{}
+    }
+    userId='111'
+    couponId =request.form.get("couponId")
+    if not couponId:
+       responseData["status"]=0
+       responseData["message"]="缺少必要的业务参数!"
+    else:
+        usercoupon=UserCoupon(userId=userId,couponId=couponId)
+        db.session.add(usercoupon)
+        db.session.commit()
+        responseData["status"]=0 
+        responseData["message"]="优惠券领取成功!"
+    return jsonify(responseData)
+
+
+
+#获取用户优惠券
+@app.route('/userCoupon',methods=["POST"])
+def userCoupon():
+    #返回参数结构
+    responseData={
+        "status":0,
+        "message":'',
+        "result":{
+            "couponList":[]
+        }
+    }
+    userId='111'
+    couponList= UserCoupon.query.filter(userId==userId).all()
+    responseData["status"]=0 
+    responseData["message"]="优惠券领取成功!"
+    # responseData["result"]["couponList"]=couponList
+    return jsonify(responseData)
+
+
+
+#用户收藏商品
+@app.route('/collect',methods=["post"])
+def collect():
+    #返回参数结构
+    responseData={
+        "status":0,
+        "message":"",
+        "result":{}
+    }
+    goodsId=request.form.get("goodsId")
+    userId="111"
+    collectId =str(uuid.uuid1())
+    if not goodsId :
+        responseData["status"]=1
+        responseData["message"]="缺少必要的业务参数"
+    else:
+        goods=Collect(goodsId=goodsId,userId=userId,collectId=collectId)
+        db.session.add(goods)
+        db.session.commit()
+        responseData["status"]=0 
+        responseData["message"]="收藏商品成功!"
+    return jsonify(responseData)
+
+
+#查询用户收藏商品
+@app.route('/userCollect',methods=["post"])
+def userCollect():
+    #返回参数结构
+    responseData={
+        "status":0,
+        "message":"",
+        "result":{
+            "collectList":[]
+        }
+    }
+    userId="1"
+    collectList=Collect.query.filter(Collect.userId==userId).all()
+    print collectList
+    return collectList
+
+
+#从收藏列表中删除
+@app.route('/delCollect',methods=["POST"])
+def delCollect():
+    #返回参数结构
+    responseData={
+        "status":0,
+        "message":"",
+        "result":{}
+    }
+    collectId=request.form.get("collectId")
+    userId='111'
+    if not collectId:
+        responseData["status"]=1
+        responseData["message"]="缺少必要的业务参数"
+    else:
+        goods=Collect.query.filter(and_(Collect.userId==userId,Collect.collectId==collectId)).first()
+        if not goods:
+           responseData["status"]=1 
+           responseData["message"]="操作失败,请稍后重试!"   
+        else:
+            db.session.delete(goods)
+            db.session.commit()
+            responseData["status"]=0 
+            responseData["message"]="已成功从收藏列表中移除!"
+    return jsonify(responseData)
+
+
+@app.route('/searchGoods',methods=["POST"])
+def searchGoods():
+    #返回参数结构
+    responseData={
+        "status":0,
+        "message":"",
+        "result":{}
+    }
+
+    keyword=request.form.get("keyword")
+    if not keyword:
+        responseData["status"]=1
+        responseData["message"]="请输入搜索关键词"
+    else:
+        goods=Goods.query.filter(Goods.goodsName.like('%user%')).first()
+        print goods
+
+    return 'a'    
+                    
+                     
+        
+
+    
+
+
+    
+                      
+            
+                
+            
+                   
+        
 
     
 

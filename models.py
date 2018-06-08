@@ -1,6 +1,9 @@
 # -- coding: utf-8 --
 import datetime
+from config import  SECRET_KEY  
 from flask_sqlalchemy import SQLAlchemy
+from passlib.apps import custom_app_context
+from itsdangerous import TimedJSONWebSignatureSerializer as Serializer, SignatureExpired, BadSignature
 db = SQLAlchemy()
 
 #用户表
@@ -11,6 +14,31 @@ class User(db.Model):
     password = db.Column(db.String(255),nullable=False)
     userId=db.Column(db.String(255),nullable=False)
     creatTime=db.Column(db.String(255),nullable=False)
+    # 密码加密
+    def hash_password(self, password):
+        self.password = custom_app_context.encrypt(password)
+    
+    # 密码解析
+    def verify_password(self, password):
+        return custom_app_context.verify(password, self.password)
+
+    # 获取token，有效时间1天
+    def generate_auth_token(self, expiration = 60*60*24):
+        s = Serializer(SECRET_KEY, expires_in = expiration)
+        return s.dumps({ 'token': self.userId })
+
+    # 解析token，确认登录的用户身份
+    @staticmethod
+    def verify_auth_token(token):
+        s = Serializer(SECRET_KEY)
+        try:
+            data = s.loads(token)
+        except SignatureExpired:
+            return None # valid token, but expired
+        except BadSignature:
+            return None # invalid token
+        user = User.query.get(data['userId'])
+        return user
 
 #地址表
 class Address(db.Model):
